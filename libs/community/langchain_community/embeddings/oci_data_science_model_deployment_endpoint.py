@@ -20,7 +20,7 @@ class OCIModelDeploymentEndpointEmbeddings(BaseModel, Embeddings):
             from langchain_community.embeddings import OCIModelDeploymentEndpointEmbeddings
 
             embeddings = OCIModelDeploymentEndpointEmbeddings(
-                endpoint="https://modeldeployment.us-ashburn-1.oci.customer-oci.com/{md_ocid}/predict",
+                endpoint="https://modeldeployment.us-ashburn-1.oci.customer-oci.com/<md_ocid>/predict",
             )
     """
 
@@ -133,10 +133,11 @@ class OCIModelDeploymentEndpointEmbeddings(BaseModel, Embeddings):
         return texts
 
     def _proceses_response(self, response: requests.Response) -> List[List[float]]:
+        """Extracts results from requests.Response."""
         try:
-            t = response.json()
-            embeddings = t["embeddings"]
-        except requests.exceptions.JSONDecodeError as e:
+            res_json = response.json()
+            embeddings = res_json["embeddings"]
+        except Exception as e:
             raise ValueError(
                 f"Error raised by inference API: {e}.\nResponse: {response.text}"
             )

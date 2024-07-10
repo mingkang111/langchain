@@ -1,13 +1,23 @@
-from typing import Any, Dict, List, Optional, Mapping
+from typing import Any, Dict, List, Optional, Mapping, Callable
 
 from langchain_core.embeddings import Embeddings
 from langchain_core.pydantic_v1 import BaseModel, Extra, root_validator, Field
 from langchain_core.utils import get_from_dict_or_env
+from langchain_core.language_models.llms import create_base_retry_decorator
 import requests
 
 DEFAULT_HEADER = {
     "Content-Type": "application/json",
 }
+
+
+def _create_retry_decorator(llm) -> Callable[[Any], Any]:
+    """Creates a retry decorator."""
+    errors = [requests.exceptions.ConnectTimeout]
+    decorator = create_base_retry_decorator(
+        error_types=errors, max_retries=llm.max_retries
+    )
+    return decorator
 
 
 class OCIModelDeploymentEndpointEmbeddings(BaseModel, Embeddings):
@@ -46,6 +56,9 @@ class OCIModelDeploymentEndpointEmbeddings(BaseModel, Embeddings):
     """Additional headers to pass to endpoint (e.g. Authorization, Referer).
     """
 
+    max_retries: int = 1
+    """The maximum number of retries to make when generating."""
+
     class Config:
         """Configuration for this pydantic object."""
 
@@ -82,6 +95,24 @@ class OCIModelDeploymentEndpointEmbeddings(BaseModel, Embeddings):
             **{"model_kwargs": _model_kwargs},
         }
 
+    def _embed_with_retry(self, **kwargs) -> Any:
+        """Use tenacity to retry the call."""
+        retry_decorator = _create_retry_decorator(self)
+
+        @retry_decorator
+        def _completion_with_retry(**kwargs: Any) -> Any:
+            try:
+                response = requests.post(self.endpoint, **kwargs)
+                response.raise_for_status()
+                return response
+            except Exception as e:
+                raise ValueError(
+                    f"Error occurs by inference endpoint: {str(e)}"
+                    f"\nRequests kwargs: {kwargs}"
+                )
+
+        return _completion_with_retry(**kwargs)
+
     def _embedding(self, texts: List[str]) -> List[List[float]]:
         """Call out to OCI Data Science Model Deployment Endpoint.
 
@@ -93,18 +124,16 @@ class OCIModelDeploymentEndpointEmbeddings(BaseModel, Embeddings):
             error occurs.
         """
         _model_kwargs = self.model_kwargs or {}
-        body = self._construct_json_body(texts, _model_kwargs)
+        body = self._construct_request_body(texts, _model_kwargs)
         request_kwargs = self._construct_request_kwargs(body)
-
-        try:
-            response = requests.post(self.endpoint, **request_kwargs)
-            response.raise_for_status()
-        except Exception as e:
-            raise ValueError(
-                f"Error occurs by inference endpoint: {str(e)}"
-                f"\nRequests kwargs: {request_kwargs}"
-            )
-
+        response = self._embed_with_retry(**request_kwargs)
+        # try:
+        #     response = self._embed_with_retry(**request_kwargs)
+        # except Exception as e:
+        #     raise ValueError(
+        #         f"Error occurs by inference endpoint: {str(e)}"
+        #         f"\nRequests kwargs: {request_kwargs}"
+        #     )
         return self._proceses_response(response)
 
     def _construct_request_kwargs(self, body: Any) -> dict:
@@ -128,7 +157,7 @@ class OCIModelDeploymentEndpointEmbeddings(BaseModel, Embeddings):
             )
         )
 
-    def _construct_json_body(self, texts: List[str], params: dict) -> Any:
+    def _construct_request_body(self, texts: List[str], params: dict) -> Any:
         """Constructs the request body."""
         return texts
 

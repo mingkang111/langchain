@@ -6,14 +6,19 @@ from langchain_core.utils import get_from_dict_or_env
 from langchain_core.language_models.llms import create_base_retry_decorator
 import requests
 
+
 DEFAULT_HEADER = {
     "Content-Type": "application/json",
 }
 
 
+class TokenExpiredError(Exception):
+    pass
+
+
 def _create_retry_decorator(llm) -> Callable[[Any], Any]:
     """Creates a retry decorator."""
-    errors = [requests.exceptions.ConnectTimeout]
+    errors = [requests.exceptions.ConnectTimeout, TokenExpiredError]
     decorator = create_base_retry_decorator(
         error_types=errors, max_retries=llm.max_retries
     )
@@ -21,7 +26,7 @@ def _create_retry_decorator(llm) -> Callable[[Any], Any]:
 
 
 class OCIModelDeploymentEndpointEmbeddings(BaseModel, Embeddings):
-    """OCI Data Science Model Deployment embedding models.
+    """Embedding model deployed on OCI Data Science Model Deployment.
 
     Example:
 
@@ -52,18 +57,8 @@ class OCIModelDeploymentEndpointEmbeddings(BaseModel, Embeddings):
     function. 
     """
 
-    headers: Optional[dict] = DEFAULT_HEADER
-    """Additional headers to pass to endpoint (e.g. Authorization, Referer).
-    """
-
     max_retries: int = 1
     """The maximum number of retries to make when generating."""
-
-    class Config:
-        """Configuration for this pydantic object."""
-
-        extra = Extra.forbid
-        arbitrary_types_allowed = True
 
     @root_validator()
     def validate_environment(  # pylint: disable=no-self-argument
@@ -92,6 +87,7 @@ class OCIModelDeploymentEndpointEmbeddings(BaseModel, Embeddings):
         """Get the identifying parameters."""
         _model_kwargs = self.model_kwargs or {}
         return {
+            **{"endpoint": self.endpoint},
             **{"model_kwargs": _model_kwargs},
         }
 
@@ -105,11 +101,19 @@ class OCIModelDeploymentEndpointEmbeddings(BaseModel, Embeddings):
                 response = requests.post(self.endpoint, **kwargs)
                 response.raise_for_status()
                 return response
+            except requests.exceptions.HTTPError as http_err:
+                if response.status_code == 401 and self._refresh_signer():
+                    raise TokenExpiredError() from http_err
+                else:
+                    raise ValueError(
+                        f"Error occurs by inference endpoint "
+                        f"{str(http_err)}: {response.text}"
+                    ) from http_err
             except Exception as e:
                 raise ValueError(
                     f"Error occurs by inference endpoint: {str(e)}"
                     f"\nRequests kwargs: {kwargs}"
-                )
+                ) from e
 
         return _completion_with_retry(**kwargs)
 
@@ -127,13 +131,6 @@ class OCIModelDeploymentEndpointEmbeddings(BaseModel, Embeddings):
         body = self._construct_request_body(texts, _model_kwargs)
         request_kwargs = self._construct_request_kwargs(body)
         response = self._embed_with_retry(**request_kwargs)
-        # try:
-        #     response = self._embed_with_retry(**request_kwargs)
-        # except Exception as e:
-        #     raise ValueError(
-        #         f"Error occurs by inference endpoint: {str(e)}"
-        #         f"\nRequests kwargs: {request_kwargs}"
-        #     )
         return self._proceses_response(response)
 
     def _construct_request_kwargs(self, body: Any) -> dict:
@@ -141,16 +138,17 @@ class OCIModelDeploymentEndpointEmbeddings(BaseModel, Embeddings):
         from ads.model.common.utils import _is_json_serializable
 
         _endpoint_kwargs = self.endpoint_kwargs or {}
+        headers = _endpoint_kwargs.pop("headers", DEFAULT_HEADER)
         return (
             dict(
-                headers=self.headers,
+                headers=headers,
                 json=body,
                 auth=self.auth.get("signer"),
                 **_endpoint_kwargs,
             )
             if _is_json_serializable(body)
             else dict(
-                headers=self.headers,
+                headers=headers,
                 data=body,
                 auth=self.auth.get("signer"),
                 **_endpoint_kwargs,

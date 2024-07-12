@@ -1,7 +1,6 @@
 from typing import Any, Dict, List, Optional, Mapping, Callable
-
 from langchain_core.embeddings import Embeddings
-from langchain_core.pydantic_v1 import BaseModel, Extra, root_validator, Field
+from langchain_core.pydantic_v1 import BaseModel, root_validator, Field
 from langchain_core.utils import get_from_dict_or_env
 from langchain_core.language_models.llms import create_base_retry_decorator
 import requests
@@ -106,14 +105,10 @@ class OCIModelDeploymentEndpointEmbeddings(BaseModel, Embeddings):
                     raise TokenExpiredError() from http_err
                 else:
                     raise ValueError(
-                        f"Error occurs by inference endpoint "
-                        f"{str(http_err)}: {response.text}"
+                        f"Server error: {str(http_err)}. Message: {response.text}"
                     ) from http_err
             except Exception as e:
-                raise ValueError(
-                    f"Error occurs by inference endpoint: {str(e)}"
-                    f"\nRequests kwargs: {kwargs}"
-                ) from e
+                raise ValueError(f"Error occurs by inference endpoint: {str(e)}") from e
 
         return _completion_with_retry(**kwargs)
 
